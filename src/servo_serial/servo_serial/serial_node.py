@@ -16,7 +16,7 @@ from lifecycle_msgs.msg import Transition
 from rclpy.executors import ExternalShutdownException
 from rclpy.lifecycle import LifecycleNode, State, TransitionCallbackReturn
 
-from servo_interfaces.srv import ServoCommand, ServoRead
+from servo_interfaces.srv import ServoCommand, ServoControl, ServoRead
 
 
 class ServoSerialNode(LifecycleNode):
@@ -37,6 +37,9 @@ class ServoSerialNode(LifecycleNode):
         self.declare_parameter('simulation_enabled', False)
         self.declare_parameter('simulation_default_position', 2048)
         self.declare_parameter('simulation_command_delay_s', 0.02)
+        self.declare_parameter('setup_move_speed_raw', 300)
+        self.declare_parameter('setup_move_acc_raw', 20)
+        self.declare_parameter('recover_torque_cycle_delay_s', 0.25)
         self.declare_parameter('windows_proxy_enabled', True)
         self.declare_parameter('windows_proxy_timeout_s', 8.0)
         self.declare_parameter('windows_proxy_python', 'py -3')
@@ -60,8 +63,10 @@ class ServoSerialNode(LifecycleNode):
         self._proxy_stderr_thread: Optional[threading.Thread] = None
         self._simulation_enabled = False
         self._sim_positions: dict[int, int] = {}
+        self._middle_positions: dict[int, int] = {}
         self._service_command = None
         self._service_read = None
+        self._service_control = None
         self._lock = threading.Lock()
 
     def _resolve_library_path(self) -> str:
@@ -270,10 +275,22 @@ class ServoSerialNode(LifecycleNode):
                 except Exception:
                     pass
 
-    def _run_proxy(self, op: str, servo_id: int, position: int = 0, speed: int = 120, acc: int = 10) -> dict:
+    def _run_proxy(
+        self,
+        op: str,
+        servo_id: int,
+        position: int = 0,
+        speed: int = 120,
+        acc: int = 10,
+        command: str = '',
+    ) -> dict:
         payload = {'op': str(op), 'id': int(servo_id)}
         if op == 'write':
             payload['position'] = int(position)
+            payload['speed'] = int(speed)
+            payload['acc'] = int(acc)
+        elif op == 'control':
+            payload['command'] = str(command)
             payload['speed'] = int(speed)
             payload['acc'] = int(acc)
         return self._proxy_request(payload)
@@ -303,10 +320,12 @@ class ServoSerialNode(LifecycleNode):
     def _init_sdk(self) -> bool:
         self._simulation_enabled = bool(self.get_parameter('simulation_enabled').value)
         known_ids = [int(v) for v in list(self.get_parameter('known_ids').value)]
+        self._middle_positions = {sid: 2048 for sid in known_ids}
 
         if self._simulation_enabled:
             default_pos = int(self.get_parameter('simulation_default_position').value)
             self._sim_positions = {sid: default_pos for sid in known_ids}
+            self._middle_positions = {sid: int(default_pos) for sid in known_ids}
             self.get_logger().warn(
                 f'Simulation mode enabled. No hardware will be used. IDs={known_ids}, default_pos={default_pos}'
             )
@@ -431,6 +450,7 @@ class ServoSerialNode(LifecycleNode):
 
     def _shutdown_sdk(self) -> None:
         self._sim_positions.clear()
+        self._middle_positions.clear()
         self._transport_mode = 'native'
         self._stop_proxy_daemon()
 
@@ -450,6 +470,36 @@ class ServoSerialNode(LifecycleNode):
         if err != 0:
             return False, self._packet_handler.getRxPacketError(err)
         return True, 'ok'
+
+    def _set_torque_native(self, sid: int, enable: bool) -> tuple[bool, int, str]:
+        if self._packet_handler is None:
+            return False, -1, 'serial node is not active'
+        if self._torque_reg is None:
+            return False, -1, 'torque register not configured'
+
+        expected = 1 if bool(enable) else 0
+        comm, err = self._packet_handler.write1ByteTxRx(int(sid), int(self._torque_reg), int(expected))
+        ok, msg = self._comm_ok(comm, err)
+        if not ok:
+            return False, -1, msg
+
+        # Read back torque bit so release/torque-on operations are observable.
+        try:
+            value, comm_rb, err_rb = self._packet_handler.read1ByteTxRx(int(sid), int(self._torque_reg))
+            ok_rb, msg_rb = self._comm_ok(comm_rb, err_rb)
+            if not ok_rb:
+                return True, -1, f'write ok; readback unavailable: {msg_rb}'
+            readback = int(value)
+            if readback != expected:
+                return False, readback, f'readback mismatch expected={expected} got={readback}'
+            return True, readback, 'ok'
+        except Exception as exc:
+            return True, -1, f'write ok; readback exception: {exc}'
+
+    def _setup_motion(self) -> tuple[int, int]:
+        speed = int(self.get_parameter('setup_move_speed_raw').value)
+        acc = int(self.get_parameter('setup_move_acc_raw').value)
+        return max(1, speed), max(1, acc)
 
     def _srv_read(self, request: ServoRead.Request, response: ServoRead.Response) -> ServoRead.Response:
         if self._simulation_enabled:
@@ -536,8 +586,7 @@ class ServoSerialNode(LifecycleNode):
 
         with self._lock:
             if auto_torque:
-                comm, err = self._packet_handler.write1ByteTxRx(sid, self._torque_reg, 1)
-                ok, msg = self._comm_ok(comm, err)
+                ok, _readback, msg = self._set_torque_native(sid, enable=True)
                 if not ok:
                     response.success = False
                     response.present_position = 0
@@ -562,6 +611,200 @@ class ServoSerialNode(LifecycleNode):
             response.message = msg
             return response
 
+    def _srv_control(self, request: ServoControl.Request, response: ServoControl.Response) -> ServoControl.Response:
+        sid = int(request.id)
+        cmd = str(request.command).strip().lower().replace(' ', '_')
+
+        if not cmd:
+            response.success = False
+            response.present_position = 0
+            response.message = 'command is required'
+            return response
+
+        if self._simulation_enabled:
+            with self._lock:
+                if sid not in self._sim_positions:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'unknown simulated id {sid}'
+                    return response
+
+                if cmd in ('torque_on', 'release', 'torque_off'):
+                    response.success = True
+                    response.present_position = int(self._sim_positions[sid])
+                    response.message = f'simulated {cmd}'
+                    return response
+
+                if cmd == 'set_middle':
+                    self._middle_positions[sid] = int(self._sim_positions[sid])
+                    response.success = True
+                    response.present_position = int(self._sim_positions[sid])
+                    response.message = f'simulated middle set to {self._middle_positions[sid]}'
+                    return response
+
+                if cmd == 'middle':
+                    target = int(self._middle_positions.get(sid, 2048))
+                    self._sim_positions[sid] = max(0, min(4095, target))
+                    response.success = True
+                    response.present_position = int(self._sim_positions[sid])
+                    response.message = 'simulated moved to middle'
+                    return response
+
+                if cmd == 'stop':
+                    response.success = True
+                    response.present_position = int(self._sim_positions[sid])
+                    response.message = 'simulated stop'
+                    return response
+
+                if cmd == 'recover':
+                    response.success = True
+                    response.present_position = int(self._sim_positions[sid])
+                    response.message = 'simulated recover'
+                    return response
+
+            response.success = False
+            response.present_position = 0
+            response.message = f'unknown control command: {cmd}'
+            return response
+
+        setup_speed, setup_acc = self._setup_motion()
+
+        if self._transport_mode == 'windows_proxy':
+            result = self._run_proxy(
+                op='control',
+                servo_id=sid,
+                speed=setup_speed,
+                acc=setup_acc,
+                command=cmd,
+            )
+            response.success = bool(result.get('success', False))
+            response.present_position = int(result.get('present_position', 0)) if response.success else 0
+            response.message = str(result.get('message', 'ok' if response.success else 'control failed'))
+            if cmd == 'set_middle' and response.success:
+                self._middle_positions[sid] = int(response.present_position)
+            return response
+
+        if self._packet_handler is None:
+            response.success = False
+            response.present_position = 0
+            response.message = 'serial node is not active'
+            return response
+
+        with self._lock:
+            if cmd == 'torque_on':
+                ok, readback, msg = self._set_torque_native(sid, enable=True)
+                response.success = ok
+                response.present_position = 0
+                if ok:
+                    response.message = msg if readback < 0 else f'{msg}; readback={readback}'
+                else:
+                    response.message = f'torque on failed: {msg}'
+                return response
+
+            if cmd in ('release', 'torque_off'):
+                ok, readback, msg = self._set_torque_native(sid, enable=False)
+                response.success = ok
+                response.present_position = 0
+                if ok:
+                    response.message = msg if readback < 0 else f'{msg}; readback={readback}'
+                else:
+                    response.message = f'torque off failed: {msg}'
+                return response
+
+            if cmd == 'recover':
+                cycle_delay = max(0.0, float(self.get_parameter('recover_torque_cycle_delay_s').value))
+                ok_off, readback_off, msg_off = self._set_torque_native(sid, enable=False)
+                if not ok_off:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'recover torque off failed: {msg_off}'
+                    return response
+                if cycle_delay > 0.0:
+                    time.sleep(cycle_delay)
+                ok_on, readback_on, msg_on = self._set_torque_native(sid, enable=True)
+                if not ok_on:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'recover torque on failed: {msg_on}'
+                    return response
+                pos, comm, err = self._packet_handler.ReadPos(sid)
+                ok_pos, msg_pos = self._comm_ok(comm, err)
+                response.success = ok_pos
+                response.present_position = int(pos if ok_pos else 0)
+                if ok_pos:
+                    off_text = str(readback_off) if readback_off >= 0 else '?'
+                    on_text = str(readback_on) if readback_on >= 0 else '?'
+                    response.message = f'recover complete; torque {off_text}->{on_text}; {msg_on}'
+                else:
+                    response.message = f'recover done but read failed: {msg_pos}'
+                return response
+
+            if cmd == 'set_middle':
+                pos, comm, err = self._packet_handler.ReadPos(sid)
+                ok, msg = self._comm_ok(comm, err)
+                if not ok:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'read failed: {msg}'
+                    return response
+                self._middle_positions[sid] = int(pos)
+                response.success = True
+                response.present_position = int(pos)
+                response.message = f'middle set to {int(pos)}'
+                return response
+
+            if cmd == 'middle':
+                target = int(self._middle_positions.get(sid, 2048))
+                ok_torque, _readback, torque_msg = self._set_torque_native(sid, enable=True)
+                if not ok_torque:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'torque on failed before middle move: {torque_msg}'
+                    return response
+                comm, err = self._packet_handler.WritePosEx(sid, target, setup_speed, setup_acc)
+                ok, msg = self._comm_ok(comm, err)
+                if not ok:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'middle move failed: {msg}'
+                    return response
+                time.sleep(float(self.get_parameter('command_settle_s').value))
+                pos, comm, err = self._packet_handler.ReadPos(sid)
+                ok, msg = self._comm_ok(comm, err)
+                response.success = ok
+                response.present_position = int(pos if ok else 0)
+                response.message = msg if ok else f'read failed: {msg}'
+                return response
+
+            if cmd == 'stop':
+                # "Stop" should hold current position, not command position 0.
+                pos, comm, err = self._packet_handler.ReadPos(sid)
+                ok, msg = self._comm_ok(comm, err)
+                if not ok:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'stop read failed: {msg}'
+                    return response
+
+                ok_torque, _readback, torque_msg = self._set_torque_native(sid, enable=True)
+                if not ok_torque:
+                    response.success = False
+                    response.present_position = 0
+                    response.message = f'stop torque-on failed: {torque_msg}'
+                    return response
+
+                comm, err = self._packet_handler.WritePosEx(sid, int(pos), setup_speed, setup_acc)
+                ok, msg = self._comm_ok(comm, err)
+                response.success = ok
+                response.present_position = int(pos if ok else 0)
+                response.message = 'stop-hold latched' if ok else f'stop hold failed: {msg}'
+                return response
+
+        response.success = False
+        response.present_position = 0
+        response.message = f'unknown control command: {cmd}'
+        return response
+
     def on_configure(self, state: State) -> TransitionCallbackReturn:
         try:
             if not self._init_sdk():
@@ -574,6 +817,7 @@ class ServoSerialNode(LifecycleNode):
     def on_activate(self, state: State) -> TransitionCallbackReturn:
         self._service_command = self.create_service(ServoCommand, 'servo_serial/command', self._srv_command)
         self._service_read = self.create_service(ServoRead, 'servo_serial/read', self._srv_read)
+        self._service_control = self.create_service(ServoControl, 'servo_serial/control', self._srv_control)
         self.get_logger().info('servo_serial services activated')
         return TransitionCallbackReturn.SUCCESS
 
@@ -584,6 +828,9 @@ class ServoSerialNode(LifecycleNode):
         if self._service_read is not None:
             self.destroy_service(self._service_read)
             self._service_read = None
+        if self._service_control is not None:
+            self.destroy_service(self._service_control)
+            self._service_control = None
         self.get_logger().info('servo_serial services deactivated')
         return TransitionCallbackReturn.SUCCESS
 

@@ -14,7 +14,17 @@ from rclpy.node import Node
 
 from servo_interfaces.action import MotorMove
 from servo_interfaces.msg import MotorState
-from servo_interfaces.srv import ServoRead
+from servo_interfaces.srv import ServoControl, ServoRead
+
+
+MOTOR_PROFILES = {
+    'waveshare_st3215': {
+        'id': 'waveshare_st3215',
+        'name': 'Waveshare ST3215',
+        'speed_max': 3073,
+        'acc_max': 150,
+    },
+}
 
 
 class RosBridgeNode(Node):
@@ -29,19 +39,25 @@ class RosBridgeNode(Node):
         self.declare_parameter('motor_ids', [1, 2])
         self.declare_parameter('motor_min', [0, 0])
         self.declare_parameter('motor_max', [4095, 4095])
+        self.declare_parameter('motor_type', 'waveshare_st3215')
         self.declare_parameter('names_file', '')
         self.declare_parameter('positions_file', '')
         self.declare_parameter('serial_read_service', 'servo_serial/read')
+        self.declare_parameter('serial_control_service', 'servo_serial/control')
         self.declare_parameter('live_poll_period_s', 1.0)
 
         state_topic = str(self.get_parameter('state_topic').value)
         action_name = str(self.get_parameter('motor_action_name').value)
         read_service = str(self.get_parameter('serial_read_service').value)
+        control_service = str(self.get_parameter('serial_control_service').value)
         live_poll_period_s = float(self.get_parameter('live_poll_period_s').value)
+        motor_type = str(self.get_parameter('motor_type').value).strip().lower()
 
         self._sub = self.create_subscription(MotorState, state_topic, self._on_state, 10)
         self._action_client = ActionClient(self, MotorMove, action_name)
         self._read_client = self.create_client(ServoRead, read_service)
+        self._control_client = self.create_client(ServoControl, control_service)
+        self._motor_profile = dict(MOTOR_PROFILES.get(motor_type, MOTOR_PROFILES['waveshare_st3215']))
         self._live_limits = self._build_live_limits()
         self._live_poll_pending: set[int] = set()
         self._live_poll_lock = threading.Lock()
@@ -51,6 +67,8 @@ class RosBridgeNode(Node):
 
         self._ws_clients = set()
         self._clients_lock = threading.Lock()
+        self._active_goal_handles: dict[int, object] = {}
+        self._active_goal_lock = threading.Lock()
 
         self._names_lock = threading.Lock()
         self._names_file = self._resolve_names_file()
@@ -58,7 +76,7 @@ class RosBridgeNode(Node):
 
         self._positions_lock = threading.Lock()
         self._positions_file = self._resolve_positions_file()
-        self._saved_positions, self._dual_presets = self._load_positions()
+        self._saved_positions, self._dual_presets, self._manual_limits = self._load_positions()
 
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._run_web_loop, daemon=True)
@@ -128,6 +146,9 @@ class RosBridgeNode(Node):
         defaults = [0.0, 12.5, 25.0, 37.5, 50.0, 62.5, 75.0, 87.5, 100.0]
         return {sid: list(defaults) for sid in self._known_ids()}
 
+    def _default_manual_limits(self) -> dict[int, dict[str, float]]:
+        return {sid: {'min': 0.0, 'max': 100.0} for sid in self._known_ids()}
+
     @staticmethod
     def _default_dual_presets() -> list[dict]:
         return [
@@ -153,15 +174,17 @@ class RosBridgeNode(Node):
             self.get_logger().warn(f'Failed loading names file {path}: {exc}')
         return defaults
 
-    def _load_positions(self) -> tuple[dict[int, list[float]], list[dict]]:
+    def _load_positions(self) -> tuple[dict[int, list[float]], list[dict], dict[int, dict[str, float]]]:
         defaults_single = self._default_positions()
         defaults_dual = self._default_dual_presets()
+        defaults_limits = self._default_manual_limits()
         path = self._positions_file
         try:
             if path.exists():
                 raw = json.loads(path.read_text(encoding='utf-8'))
                 single_source = raw.get('single', raw) if isinstance(raw, dict) else {}
                 dual_source = raw.get('dual', {}) if isinstance(raw, dict) else {}
+                limits_source = raw.get('manual_limits', {}) if isinstance(raw, dict) else {}
 
                 merged_single = dict(defaults_single)
                 for k, arr in single_source.items():
@@ -194,10 +217,28 @@ class RosBridgeNode(Node):
                         p2 = float(max(0.0, min(100.0, float(preset.get('p2', 50.0)))))
                         merged_dual[slot - 1] = {'name': name[:40], 'p1': p1, 'p2': p2}
 
-                return merged_single, merged_dual
+                merged_limits = dict(defaults_limits)
+                if isinstance(limits_source, dict):
+                    for id_str, vals in limits_source.items():
+                        try:
+                            sid = int(id_str)
+                        except Exception:
+                            continue
+                        if sid not in defaults_limits or not isinstance(vals, dict):
+                            continue
+                        try:
+                            vmin = float(max(0.0, min(100.0, float(vals.get('min', 0.0)))))
+                            vmax = float(max(0.0, min(100.0, float(vals.get('max', 100.0)))))
+                        except Exception:
+                            continue
+                        if vmax < vmin:
+                            vmin, vmax = vmax, vmin
+                        merged_limits[sid] = {'min': vmin, 'max': vmax}
+
+                return merged_single, merged_dual, merged_limits
         except Exception as exc:
             self.get_logger().warn(f'Failed loading positions file {path}: {exc}')
-        return defaults_single, defaults_dual
+        return defaults_single, defaults_dual, defaults_limits
 
     def _save_names(self) -> None:
         path = self._names_file
@@ -220,6 +261,13 @@ class RosBridgeNode(Node):
                     }
                     for idx, preset in enumerate(self._dual_presets)
                 },
+                'manual_limits': {
+                    str(k): {
+                        'min': float(v['min']),
+                        'max': float(v['max']),
+                    }
+                    for k, v in self._manual_limits.items()
+                },
             }
         path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
 
@@ -240,6 +288,16 @@ class RosBridgeNode(Node):
                     'p2': float(preset['p2']),
                 }
                 for idx, preset in enumerate(self._dual_presets)
+            }
+
+    def _manual_limits_payload(self) -> dict[str, dict]:
+        with self._positions_lock:
+            return {
+                str(k): {
+                    'min': float(v['min']),
+                    'max': float(v['max']),
+                }
+                for k, v in self._manual_limits.items()
             }
 
     def _static_root(self) -> Path:
@@ -273,6 +331,8 @@ class RosBridgeNode(Node):
                 'names': names_payload,
                 'positions': self._positions_payload(),
                 'dual_presets': self._dual_payload(),
+                'manual_limits': self._manual_limits_payload(),
+                'motor_profile': dict(self._motor_profile),
                 'modes': ['manual', 'saved', 'dual'],
             }))
             async for msg in ws:
@@ -317,6 +377,15 @@ class RosBridgeNode(Node):
             return
         if msg_type == 'set_slot':
             await self._handle_ws_set_slot(data, ws)
+            return
+        if msg_type == 'set_manual_limits':
+            await self._handle_ws_set_manual_limits(data, ws)
+            return
+        if msg_type == 'control':
+            await self._handle_ws_control(data, ws)
+            return
+        if msg_type == 'stop_all':
+            await self._handle_ws_stop_all(ws)
             return
         if msg_type == 'set':
             # Backward-compatible alias from older UI.
@@ -422,6 +491,120 @@ class RosBridgeNode(Node):
 
         await self._broadcast({'type': 'slot', 'id': motor_id, 'slot': slot, 'percent': clamped})
 
+    async def _handle_ws_set_manual_limits(self, data: dict, ws: web.WebSocketResponse) -> None:
+        try:
+            motor_id = int(data['id'])
+            pmin = float(data['min'])
+            pmax = float(data['max'])
+        except Exception:
+            await self._ws_send(ws, {'type': 'error', 'message': 'bad set_manual_limits schema'})
+            return
+
+        if motor_id not in self._known_ids():
+            await self._ws_send(ws, {'type': 'error', 'message': f'unknown id={motor_id}'})
+            return
+
+        pmin = float(max(0.0, min(100.0, pmin)))
+        pmax = float(max(0.0, min(100.0, pmax)))
+        if pmax < pmin:
+            pmin, pmax = pmax, pmin
+
+        with self._positions_lock:
+            self._manual_limits[motor_id] = {'min': pmin, 'max': pmax}
+        try:
+            self._save_positions()
+        except Exception as exc:
+            await self._ws_send(ws, {'type': 'error', 'message': f'failed to save manual limits: {exc}'})
+            return
+
+        await self._broadcast({'type': 'manual_limits', 'id': motor_id, 'min': pmin, 'max': pmax})
+
+    async def _handle_ws_control(self, data: dict, ws: web.WebSocketResponse) -> None:
+        try:
+            motor_id = int(data['id'])
+            command = str(data['command']).strip().lower().replace(' ', '_')
+        except Exception:
+            await self._ws_send(ws, {'type': 'error', 'message': 'bad control schema'})
+            return
+
+        if motor_id not in self._known_ids():
+            await self._ws_send(ws, {'type': 'error', 'message': f'unknown id={motor_id}'})
+            return
+
+        allowed = {'release', 'set_middle', 'middle', 'stop', 'torque_on', 'torque_off', 'recover'}
+        if command not in allowed:
+            await self._ws_send(ws, {'type': 'error', 'message': f'unsupported control command: {command}'})
+            return
+
+        if self._control_client is None or not self._control_client.service_is_ready():
+            await self._ws_send(ws, {'type': 'error', 'message': 'serial control service unavailable'})
+            return
+
+        req = ServoControl.Request()
+        req.id = int(motor_id)
+        req.command = command
+        fut = self._control_client.call_async(req)
+        fut.add_done_callback(lambda future, sid=motor_id, cmd=command: self._on_control_done(future, sid, cmd))
+        await self._ws_send(ws, {'type': 'queued_control', 'id': motor_id, 'command': command})
+
+    def _cancel_active_goals(self) -> int:
+        with self._active_goal_lock:
+            handles = list(self._active_goal_handles.values())
+        cancelled = 0
+        for handle in handles:
+            try:
+                handle.cancel_goal_async()
+                cancelled += 1
+            except Exception:
+                pass
+        return cancelled
+
+    async def _handle_ws_stop_all(self, ws: web.WebSocketResponse) -> None:
+        cancelled = self._cancel_active_goals()
+
+        if self._control_client is None or not self._control_client.service_is_ready():
+            await self._ws_send(ws, {'type': 'error', 'message': 'serial control service unavailable'})
+            return
+
+        ids = self._known_ids()
+        issued = 0
+        for sid in ids:
+            req = ServoControl.Request()
+            req.id = int(sid)
+            req.command = 'stop'
+            fut = self._control_client.call_async(req)
+            fut.add_done_callback(lambda future, motor_id=sid: self._on_control_done(future, motor_id, 'stop'))
+            issued += 1
+
+        await self._broadcast({
+            'type': 'stop_all_queued',
+            'cancelled_goals': int(cancelled),
+            'issued_stop_commands': int(issued),
+            'ids': [int(x) for x in ids],
+        })
+
+    def _on_control_done(self, future, motor_id: int, command: str) -> None:
+        try:
+            res = future.result()
+            payload = {
+                'type': 'control_result',
+                'id': int(motor_id),
+                'command': str(command),
+                'success': bool(res.success),
+                'present_position': int(res.present_position),
+                'message': str(res.message),
+            }
+        except Exception as exc:
+            payload = {
+                'type': 'control_result',
+                'id': int(motor_id),
+                'command': str(command),
+                'success': False,
+                'present_position': 0,
+                'message': f'control failed: {exc}',
+            }
+        self._submit_coro(self._broadcast(payload))
+
     async def _handle_ws_set_dual_slot(self, data: dict, ws: web.WebSocketResponse) -> None:
         try:
             slot = int(data['slot'])
@@ -523,10 +706,16 @@ class RosBridgeNode(Node):
             )
             return
 
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(lambda fut: self._on_dual_goal_result(fut, context, stage))
+        with self._active_goal_lock:
+            self._active_goal_handles[id(goal_handle)] = goal_handle
 
-    def _on_dual_goal_result(self, future, context: dict, stage: int) -> None:
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(lambda fut, gh=goal_handle: self._on_dual_goal_result(fut, context, stage, gh))
+
+    def _on_dual_goal_result(self, future, context: dict, stage: int, goal_handle=None) -> None:
+        if goal_handle is not None:
+            with self._active_goal_lock:
+                self._active_goal_handles.pop(id(goal_handle), None)
         try:
             wrapped = future.result()
             result = wrapped.result
@@ -669,13 +858,16 @@ class RosBridgeNode(Node):
             self._schedule_ws_send(ws, payload)
             return
 
+        with self._active_goal_lock:
+            self._active_goal_handles[id(goal_handle)] = goal_handle
+
         accepted = {'type': 'accepted', 'id': motor_id, 'percent': percent, 'mode': mode}
         if slot is not None:
             accepted['slot'] = slot
         self._schedule_ws_send(ws, accepted)
 
         result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._on_action_result)
+        result_future.add_done_callback(lambda future, gh=goal_handle: self._on_action_result(future, gh))
 
     def _on_action_feedback(self, feedback_msg) -> None:
         fb = feedback_msg.feedback
@@ -689,7 +881,10 @@ class RosBridgeNode(Node):
         }
         self._submit_coro(self._broadcast(payload))
 
-    def _on_action_result(self, future) -> None:
+    def _on_action_result(self, future, goal_handle=None) -> None:
+        if goal_handle is not None:
+            with self._active_goal_lock:
+                self._active_goal_handles.pop(id(goal_handle), None)
         try:
             wrapped = future.result()
             res = wrapped.result

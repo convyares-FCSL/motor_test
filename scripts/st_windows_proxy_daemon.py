@@ -25,6 +25,39 @@ def emit(payload: dict) -> None:
     print(json.dumps(payload), flush=True)
 
 
+def read_position(handler, comm_success: int, servo_id: int) -> tuple[bool, int, str]:
+    pos, comm, err = handler.ReadPos(servo_id)
+    ok, msg = comm_result(handler, comm_success, comm, err)
+    return ok, int(pos if ok else 0), msg
+
+
+def set_torque(
+    handler,
+    comm_success: int,
+    servo_id: int,
+    torque_reg: int,
+    enable: bool,
+) -> tuple[bool, int, str]:
+    expected = 1 if bool(enable) else 0
+    comm, err = handler.write1ByteTxRx(int(servo_id), int(torque_reg), int(expected))
+    ok, msg = comm_result(handler, comm_success, comm, err)
+    if not ok:
+        return False, -1, msg
+
+    # Readback helps verify that torque state actually changed on hardware.
+    try:
+        value, comm_rb, err_rb = handler.read1ByteTxRx(int(servo_id), int(torque_reg))
+        ok_rb, msg_rb = comm_result(handler, comm_success, comm_rb, err_rb)
+        if not ok_rb:
+            return True, -1, f'write ok; readback unavailable: {msg_rb}'
+        readback = int(value)
+        if readback != expected:
+            return False, readback, f'readback mismatch expected={expected} got={readback}'
+        return True, readback, 'ok'
+    except Exception as exc:
+        return True, -1, f'write ok; readback exception: {exc}'
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Persistent Windows-side ST servo proxy daemon.')
     parser.add_argument('--library-path', required=True)
@@ -42,6 +75,7 @@ def main() -> int:
 
     port = PortHandler(args.port)
     handler = sts(port)
+    middle_positions: dict[int, int] = {}
 
     try:
         if not port.openPort():
@@ -107,8 +141,7 @@ def main() -> int:
 
             if op == 'read':
                 try:
-                    pos, comm, err = handler.ReadPos(servo_id)
-                    ok, msg = comm_result(handler, COMM_SUCCESS, comm, err)
+                    ok, pos, msg = read_position(handler, COMM_SUCCESS, servo_id)
                     emit({'success': ok, 'position': int(pos) if ok else 0, 'message': msg})
                 except Exception as exc:
                     emit({'success': False, 'message': f'read exception: {exc}'})
@@ -124,8 +157,13 @@ def main() -> int:
                     continue
 
                 try:
-                    comm, err = handler.write1ByteTxRx(servo_id, STS_TORQUE_ENABLE, 1)
-                    ok, msg = comm_result(handler, COMM_SUCCESS, comm, err)
+                    ok, _readback, msg = set_torque(
+                        handler,
+                        COMM_SUCCESS,
+                        servo_id,
+                        STS_TORQUE_ENABLE,
+                        enable=True,
+                    )
                     if not ok:
                         emit({'success': False, 'present_position': 0, 'message': f'torque enable failed: {msg}'})
                         continue
@@ -138,8 +176,7 @@ def main() -> int:
                         continue
 
                     time.sleep(0.2)
-                    pos, comm, err = handler.ReadPos(servo_id)
-                    ok, msg = comm_result(handler, COMM_SUCCESS, comm, err)
+                    ok, pos, msg = read_position(handler, COMM_SUCCESS, servo_id)
                     emit({
                         'success': ok,
                         'present_position': int(pos) if ok else 0,
@@ -147,6 +184,144 @@ def main() -> int:
                     })
                 except Exception as exc:
                     emit({'success': False, 'message': f'write exception: {exc}'})
+                continue
+
+            if op == 'control':
+                command = str(req.get('command', '')).strip().lower().replace(' ', '_')
+                setup_speed = max(1, int(req.get('speed', 300)))
+                setup_acc = max(1, int(req.get('acc', 20)))
+
+                try:
+                    if command == 'torque_on':
+                        ok, readback, msg = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=True,
+                        )
+                        emit({
+                            'success': ok,
+                            'present_position': 0,
+                            'message': (msg if readback < 0 else f'{msg}; readback={readback}') if ok else f'torque on failed: {msg}',
+                        })
+                        continue
+
+                    if command in ('release', 'torque_off'):
+                        ok, readback, msg = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=False,
+                        )
+                        emit({
+                            'success': ok,
+                            'present_position': 0,
+                            'message': (msg if readback < 0 else f'{msg}; readback={readback}') if ok else f'torque off failed: {msg}',
+                        })
+                        continue
+
+                    if command == 'set_middle':
+                        ok, pos, msg = read_position(handler, COMM_SUCCESS, servo_id)
+                        if not ok:
+                            emit({'success': False, 'present_position': 0, 'message': f'read failed: {msg}'})
+                            continue
+                        middle_positions[servo_id] = int(pos)
+                        emit({'success': True, 'present_position': int(pos), 'message': f'middle set to {int(pos)}'})
+                        continue
+
+                    if command == 'middle':
+                        target = int(middle_positions.get(servo_id, 2048))
+                        ok_torque, _readback, torque_msg = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=True,
+                        )
+                        if not ok_torque:
+                            emit({
+                                'success': False,
+                                'present_position': 0,
+                                'message': f'torque on failed before middle move: {torque_msg}',
+                            })
+                            continue
+                        comm, err = handler.WritePosEx(servo_id, target, setup_speed, setup_acc)
+                        ok, msg = comm_result(handler, COMM_SUCCESS, comm, err)
+                        if not ok:
+                            emit({'success': False, 'present_position': 0, 'message': f'middle move failed: {msg}'})
+                            continue
+                        time.sleep(0.2)
+                        ok, pos, msg = read_position(handler, COMM_SUCCESS, servo_id)
+                        emit({'success': ok, 'present_position': int(pos) if ok else 0, 'message': msg})
+                        continue
+
+                    if command == 'stop':
+                        ok_pos, pos, msg_pos = read_position(handler, COMM_SUCCESS, servo_id)
+                        if not ok_pos:
+                            emit({'success': False, 'present_position': 0, 'message': f'stop read failed: {msg_pos}'})
+                            continue
+
+                        ok_torque, _readback, torque_msg = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=True,
+                        )
+                        if not ok_torque:
+                            emit({'success': False, 'present_position': 0, 'message': f'stop torque-on failed: {torque_msg}'})
+                            continue
+
+                        comm, err = handler.WritePosEx(servo_id, int(pos), setup_speed, setup_acc)
+                        ok, msg = comm_result(handler, COMM_SUCCESS, comm, err)
+                        emit({
+                            'success': ok,
+                            'present_position': int(pos if ok else 0),
+                            'message': 'stop-hold latched' if ok else f'stop hold failed: {msg}',
+                        })
+                        continue
+
+                    if command == 'recover':
+                        ok_off, readback_off, msg_off = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=False,
+                        )
+                        if not ok_off:
+                            emit({'success': False, 'present_position': 0, 'message': f'recover torque off failed: {msg_off}'})
+                            continue
+                        time.sleep(0.25)
+                        ok_on, readback_on, msg_on = set_torque(
+                            handler,
+                            COMM_SUCCESS,
+                            servo_id,
+                            STS_TORQUE_ENABLE,
+                            enable=True,
+                        )
+                        if not ok_on:
+                            emit({'success': False, 'present_position': 0, 'message': f'recover torque on failed: {msg_on}'})
+                            continue
+                        ok_pos, pos, msg_pos = read_position(handler, COMM_SUCCESS, servo_id)
+                        if not ok_pos:
+                            emit({'success': False, 'present_position': 0, 'message': f'recover done but read failed: {msg_pos}'})
+                            continue
+                        off_text = str(readback_off) if readback_off >= 0 else '?'
+                        on_text = str(readback_on) if readback_on >= 0 else '?'
+                        emit({
+                            'success': True,
+                            'present_position': int(pos),
+                            'message': f'recover complete; torque {off_text}->{on_text}; {msg_on}',
+                        })
+                        continue
+                except Exception as exc:
+                    emit({'success': False, 'present_position': 0, 'message': f'control exception: {exc}'})
+                    continue
+
+                emit({'success': False, 'present_position': 0, 'message': f'unknown control command: {command}'})
                 continue
 
             emit({'success': False, 'message': f'unknown op: {op}'})

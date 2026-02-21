@@ -1,0 +1,6 @@
+int32 id
+string command
+---
+bool success
+int32 present_position
+string message

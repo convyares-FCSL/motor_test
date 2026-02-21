@@ -68,7 +68,32 @@ h2 {
 }
 
 .row.control {
-  grid-template-columns: 70px 1fr 70px 170px 70px 110px 60px 100px;
+  grid-template-columns: 70px 1fr 70px 220px;
+  align-items: center;
+}
+
+.row.global-actions {
+  grid-template-columns: 1fr;
+  align-items: center;
+}
+
+.row.tuning {
+  grid-template-columns: 90px 1fr 110px 70px 1fr 110px;
+  align-items: center;
+}
+
+.row.manual-setup {
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  align-items: center;
+}
+
+.row.manual-jog {
+  grid-template-columns: 100px 120px 1fr 1fr;
+  align-items: center;
+}
+
+.row.manual-limits {
+  grid-template-columns: 90px 120px 90px 120px 190px;
   align-items: center;
 }
 
@@ -182,6 +207,17 @@ button {
   color: #062823;
 }
 
+.setup-btn {
+  background: #2d4258;
+  color: var(--text);
+}
+
+.stop-all-btn {
+  background: #c62828;
+  color: #fff;
+  border-color: #ef9a9a;
+}
+
 .save-names {
   background: #76e26d;
   color: #0d2808;
@@ -202,6 +238,31 @@ button {
   white-space: pre-line;
 }
 
+.state-box.state-ok {
+  border-color: #37d08f;
+  background: #123629;
+}
+
+.state-box.state-warn {
+  border-color: #e2b93a;
+  background: #3a3015;
+}
+
+.state-box.state-fault {
+  border-color: #ef5350;
+  background: #3c1616;
+}
+
+.state-box.state-offline {
+  border-color: #8aa0b7;
+  background: #1d2a36;
+}
+
+.state-box.state-unknown {
+  border-color: var(--line);
+  background: #102131;
+}
+
 #dualName {
   width: calc(100% - 10px);
   justify-self: start;
@@ -210,6 +271,24 @@ button {
 .hint {
   color: var(--muted);
   margin: 10px 0 0;
+}
+
+.hint-inline {
+  color: var(--muted);
+  margin: 0;
+  grid-column: 1 / -1;
+}
+
+output {
+  display: inline-block;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-panel-2);
+  color: var(--text);
+  text-align: right;
+  box-sizing: border-box;
 }
 
 pre {
@@ -232,6 +311,19 @@ pre {
 
   .row.control {
     grid-template-columns: 80px 1fr 80px 1fr;
+  }
+
+  .row.tuning {
+    grid-template-columns: 1fr;
+  }
+
+  .row.manual-setup {
+    grid-template-columns: 1fr;
+  }
+
+  .row.manual-jog,
+  .row.manual-limits {
+    grid-template-columns: 1fr;
   }
 
   .dual-grid {

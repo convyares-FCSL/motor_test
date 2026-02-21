@@ -4,6 +4,9 @@ const target = document.getElementById('target');
 const targetv = document.getElementById('targetv');
 const speed = document.getElementById('speed');
 const acc = document.getElementById('acc');
+const speedv = document.getElementById('speedv');
+const accv = document.getElementById('accv');
+const profileInfo = document.getElementById('profileInfo');
 const saveSlotBtn = document.getElementById('saveSlot');
 const saveNamesBtn = document.getElementById('saveNames');
 const slotInfo = document.getElementById('slotInfo');
@@ -16,6 +19,9 @@ const state1 = document.getElementById('state1');
 const state2 = document.getElementById('state2');
 const singleTarget = document.getElementById('singleTarget');
 const dualTarget = document.getElementById('dualTarget');
+const manualSetup = document.getElementById('manualSetup');
+const manualJog = document.getElementById('manualJog');
+const manualLimits = document.getElementById('manualLimits');
 const singleSlots = document.getElementById('singleSlots');
 const dualSection = document.getElementById('dualSection');
 const dualName = document.getElementById('dualName');
@@ -23,6 +29,19 @@ const dualP1 = document.getElementById('dualP1');
 const dualP2 = document.getElementById('dualP2');
 const dualInfo = document.getElementById('dualInfo');
 const saveDual = document.getElementById('saveDual');
+const releaseBtn = document.getElementById('releaseBtn');
+const setMiddleBtn = document.getElementById('setMiddleBtn');
+const middleBtn = document.getElementById('middleBtn');
+const stopBtn = document.getElementById('stopBtn');
+const torqueOnBtn = document.getElementById('torqueOnBtn');
+const recoverBtn = document.getElementById('recoverBtn');
+const stopAllBtn = document.getElementById('stopAllBtn');
+const jogStep = document.getElementById('jogStep');
+const jogMinusBtn = document.getElementById('jogMinusBtn');
+const jogPlusBtn = document.getElementById('jogPlusBtn');
+const manualMin = document.getElementById('manualMin');
+const manualMax = document.getElementById('manualMax');
+const saveManualLimitsBtn = document.getElementById('saveManualLimitsBtn');
 
 const slotButtons = Array.from(document.querySelectorAll('.slot-btn'));
 const dualButtons = Array.from(document.querySelectorAll('.dual-btn'));
@@ -44,6 +63,20 @@ const dualPresets = Array.from({ length: 9 }, (_, idx) => ({
 const commandSummary = { 1: 'n/a', 2: 'n/a' };
 const liveSummary = { 1: 'n/a', 2: 'n/a' };
 const livePercent = { 1: null, 2: null };
+const manualLimitById = {
+  1: { min: 0.0, max: 100.0 },
+  2: { min: 0.0, max: 100.0 },
+};
+const motorProfile = {
+  id: 'waveshare_st3215',
+  name: 'Waveshare ST3215',
+  speed_max: 3073,
+  acc_max: 150,
+};
+const motorHealth = {
+  1: { level: 'unknown', label: 'Unknown', detail: 'waiting for telemetry' },
+  2: { level: 'unknown', label: 'Unknown', detail: 'waiting for telemetry' },
+};
 
 function log(line) {
   const ts = new Date().toISOString();
@@ -66,6 +99,60 @@ function parsePercentInput(inputEl, fallback) {
     return clamp(Number(fallback), 0, 100);
   }
   return clamp(parsed, 0, 100);
+}
+
+function clampByAxisLimits(id, value) {
+  const lim = manualLimitById[id] || { min: 0.0, max: 100.0 };
+  return clamp(Number(value), Number(lim.min), Number(lim.max));
+}
+
+function normalizeLimits(minValue, maxValue) {
+  let lo = clamp(Number(minValue), 0, 100);
+  let hi = clamp(Number(maxValue), 0, 100);
+  if (hi < lo) {
+    const t = lo;
+    lo = hi;
+    hi = t;
+  }
+  return { min: lo, max: hi };
+}
+
+function classifyHealth(success, message) {
+  if (success) {
+    return { level: 'ok', label: 'OK', detail: 'telemetry valid' };
+  }
+
+  const text = String(message || '').toLowerCase();
+  if (text.includes('overload')) {
+    return { level: 'fault', label: 'FAULT', detail: 'overload' };
+  }
+  if (text.includes('overheat')) {
+    return { level: 'fault', label: 'FAULT', detail: 'overheat' };
+  }
+  if (text.includes('input voltage') || text.includes('voltage')) {
+    return { level: 'fault', label: 'FAULT', detail: 'voltage' };
+  }
+  if (text.includes('overele') || text.includes('overcurrent') || text.includes('current')) {
+    return { level: 'fault', label: 'FAULT', detail: 'current' };
+  }
+  if (text.includes('angle')) {
+    return { level: 'fault', label: 'FAULT', detail: 'angle' };
+  }
+  if (
+    text.includes('no status packet')
+    || text.includes('timeout')
+    || text.includes('unavailable')
+    || text.includes('not active')
+    || text.includes('proxy')
+  ) {
+    return { level: 'offline', label: 'OFFLINE', detail: 'no telemetry' };
+  }
+  return { level: 'warn', label: 'WARN', detail: String(message || 'communication issue') };
+}
+
+function setMotorHealth(id, success, message) {
+  if (!(id in motorHealth)) return;
+  motorHealth[id] = classifyHealth(Boolean(success), String(message || ''));
 }
 
 function modeState() {
@@ -92,6 +179,26 @@ function updateTargetOutput() {
   targetv.value = Number(target.value).toFixed(1);
 }
 
+function speedRawFromPct() {
+  const pct = clamp(Number(speed.value), 0, 100);
+  const raw = Math.round((pct / 100.0) * Number(motorProfile.speed_max || 3073));
+  return Math.max(1, raw);
+}
+
+function accRawFromPct() {
+  const pct = clamp(Number(acc.value), 0, 100);
+  const raw = Math.round((pct / 100.0) * Number(motorProfile.acc_max || 150));
+  return Math.max(1, raw);
+}
+
+function updateMotionOutputs() {
+  const speedPct = clamp(Number(speed.value), 0, 100);
+  const accPct = clamp(Number(acc.value), 0, 100);
+  speedv.value = `${speedPct.toFixed(0)}% (${speedRawFromPct()})`;
+  accv.value = `${accPct.toFixed(0)}% (${accRawFromPct()})`;
+  profileInfo.textContent = `Profile: ${motorProfile.name} | max speed ${motorProfile.speed_max}, max acc ${motorProfile.acc_max}`;
+}
+
 function updateModeToggle() {
   const mode = modeState();
   if (mode === 'manual') {
@@ -107,6 +214,9 @@ function updateModeVisibility() {
   const mode = modeState();
   singleTarget.hidden = mode === 'dual';
   dualTarget.hidden = mode !== 'dual';
+  manualSetup.hidden = mode !== 'manual';
+  manualJog.hidden = mode !== 'manual';
+  manualLimits.hidden = mode !== 'manual';
   singleSlots.hidden = mode !== 'saved';
   dualSection.hidden = mode !== 'dual';
 }
@@ -138,11 +248,20 @@ function updateDualUI() {
 }
 
 function renderStateBox(id) {
-  const text = `ID${id}\nCommand: ${commandSummary[id]}\nLive: ${liveSummary[id]}`;
+  const health = motorHealth[id] || { level: 'unknown', label: 'Unknown', detail: '' };
+  const detail = String(health.detail || '').trim();
+  const statusLine = detail ? `${health.label} (${detail})` : `${health.label}`;
+  const text = `ID${id}\nStatus: ${statusLine}\nCommand: ${commandSummary[id]}\nLive: ${liveSummary[id]}`;
+  let el = null;
   if (id === 1) {
-    state1.textContent = text;
+    el = state1;
   } else if (id === 2) {
-    state2.textContent = text;
+    el = state2;
+  }
+  if (el) {
+    el.textContent = text;
+    el.classList.remove('state-ok', 'state-warn', 'state-fault', 'state-offline', 'state-unknown');
+    el.classList.add(`state-${health.level}`);
   }
 }
 
@@ -150,6 +269,19 @@ function applySlotToTarget() {
   const id = axisId();
   const val = saved[id][selectedSlot - 1];
   target.value = String(val);
+  updateTargetOutput();
+}
+
+function applyManualBoundsUI() {
+  const id = axisId();
+  const lim = manualLimitById[id] || { min: 0.0, max: 100.0 };
+  const lo = clamp(Number(lim.min), 0, 100);
+  const hi = clamp(Number(lim.max), lo, 100);
+  target.min = String(lo);
+  target.max = String(hi);
+  manualMin.value = lo.toFixed(1);
+  manualMax.value = hi.toFixed(1);
+  target.value = String(clampByAxisLimits(id, Number(target.value)));
   updateTargetOutput();
 }
 
@@ -163,8 +295,8 @@ function sendMoveCommand(sourceTag) {
     const payload = {
       type: 'move_dual',
       slot: selectedDualSlot,
-      speed: Number(speed.value || 120),
-      acc: Number(acc.value || 10),
+      speed: speedRawFromPct(),
+      acc: accRawFromPct(),
     };
     ws.send(JSON.stringify(payload));
     log(`tx (${sourceTag}) ${JSON.stringify(payload)}`);
@@ -176,16 +308,64 @@ function sendMoveCommand(sourceTag) {
     type: 'move',
     id,
     mode,
-    speed: Number(speed.value || 120),
-    acc: Number(acc.value || 10),
+    speed: speedRawFromPct(),
+    acc: accRawFromPct(),
   };
   if (mode === 'saved') {
     payload.slot = selectedSlot;
   } else {
-    payload.percent = clamp(Number(target.value), 0, 100);
+    payload.percent = clampByAxisLimits(id, Number(target.value));
   }
   ws.send(JSON.stringify(payload));
   log(`tx (${sourceTag}) ${JSON.stringify(payload)}`);
+}
+
+function sendControlCommand(command) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    log(`skip control (${command}): websocket not connected`);
+    return;
+  }
+  const payload = {
+    type: 'control',
+    id: axisId(),
+    command: String(command),
+  };
+  ws.send(JSON.stringify(payload));
+  log(`tx ${JSON.stringify(payload)}`);
+}
+
+function sendStopAll() {
+  if (ws.readyState !== WebSocket.OPEN) {
+    log('skip stop_all: websocket not connected');
+    return;
+  }
+  const payload = { type: 'stop_all' };
+  ws.send(JSON.stringify(payload));
+  log(`tx ${JSON.stringify(payload)}`);
+}
+
+function sendManualLimits(id, minValue, maxValue) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    log('skip save manual limits: websocket not connected');
+    return;
+  }
+  const lim = normalizeLimits(minValue, maxValue);
+  const payload = {
+    type: 'set_manual_limits',
+    id: Number(id),
+    min: lim.min,
+    max: lim.max,
+  };
+  ws.send(JSON.stringify(payload));
+  log(`tx ${JSON.stringify(payload)}`);
+}
+
+function getJogBasePercent(id) {
+  const live = livePercent[id];
+  if (Number.isFinite(live)) {
+    return clampByAxisLimits(id, Number(live));
+  }
+  return clampByAxisLimits(id, Number(target.value));
 }
 
 target.addEventListener('input', updateTargetOutput);
@@ -194,10 +374,13 @@ target.addEventListener('change', () => {
     sendMoveCommand('manual_target_change');
   }
 });
+speed.addEventListener('input', updateMotionOutputs);
+acc.addEventListener('input', updateMotionOutputs);
 
 axisRadios.forEach((radio) => {
   radio.addEventListener('change', () => {
     updateSlotUI();
+    applyManualBoundsUI();
     if (modeState() === 'saved') {
       applySlotToTarget();
     }
@@ -213,6 +396,9 @@ modeToggle.addEventListener('click', () => {
   }
   if (modeState() === 'dual') {
     updateDualUI();
+  }
+  if (modeState() === 'manual') {
+    applyManualBoundsUI();
   }
 });
 
@@ -258,6 +444,14 @@ ws.onmessage = (event) => {
   try {
 
     if (msg.type === 'hello') {
+      if (msg.motor_profile && typeof msg.motor_profile === 'object') {
+        const p = msg.motor_profile;
+        motorProfile.id = String(p.id || motorProfile.id);
+        motorProfile.name = String(p.name || motorProfile.name);
+        motorProfile.speed_max = Math.max(1, Number(p.speed_max || motorProfile.speed_max));
+        motorProfile.acc_max = Math.max(1, Number(p.acc_max || motorProfile.acc_max));
+        updateMotionOutputs();
+      }
       if (msg.names) {
         Object.entries(msg.names).forEach(([idStr, value]) => {
           setMotorName(Number(idStr), value);
@@ -285,8 +479,17 @@ ws.onmessage = (event) => {
           };
         });
       }
+      if (msg.manual_limits) {
+        Object.entries(msg.manual_limits).forEach(([idStr, lim]) => {
+          const id = Number(idStr);
+          if (!(id in manualLimitById) || !lim) return;
+          const normalized = normalizeLimits(Number(lim.min), Number(lim.max));
+          manualLimitById[id] = normalized;
+        });
+      }
       updateSlotUI();
       updateDualUI();
+      applyManualBoundsUI();
       return;
     }
 
@@ -325,9 +528,24 @@ ws.onmessage = (event) => {
       return;
     }
 
+    if (msg.type === 'manual_limits') {
+      const id = Number(msg.id);
+      if (id in manualLimitById) {
+        const normalized = normalizeLimits(Number(msg.min), Number(msg.max));
+        manualLimitById[id] = normalized;
+        if (axisId() === id) {
+          applyManualBoundsUI();
+        }
+      }
+      return;
+    }
+
     if (msg.type === 'state') {
       const id = Number(msg.id);
       commandSummary[id] = `${Number(msg.percent).toFixed(1)}% (target=${Number(msg.target_position)} actual=${Number(msg.actual_position)} ok=${Boolean(msg.success)})`;
+      if (!Boolean(msg.success)) {
+        setMotorHealth(id, false, String(msg.message || 'command failed'));
+      }
       renderStateBox(id);
       if (id === 1 || id === 2) setMotorName(id, msg.name);
       return;
@@ -341,9 +559,12 @@ ws.onmessage = (event) => {
       if (success && Number.isFinite(percent)) {
         livePercent[id] = percent;
         liveSummary[id] = `${percent.toFixed(1)}% (raw=${rawPos})`;
+        setMotorHealth(id, true, 'ok');
       } else {
         livePercent[id] = null;
-        liveSummary[id] = `unavailable (${String(msg.message || 'no response')})`;
+        const detail = String(msg.message || 'no response');
+        liveSummary[id] = `unavailable (${detail})`;
+        setMotorHealth(id, false, detail);
       }
       renderStateBox(id);
       return;
@@ -352,6 +573,27 @@ ws.onmessage = (event) => {
     if (msg.type === 'dual_result') {
       const text = `dual slot=${msg.slot} name=${msg.name} success=${Boolean(msg.success)}`;
       log(text);
+      return;
+    }
+
+    if (msg.type === 'control_result') {
+      const id = Number(msg.id);
+      const text = `control id=${id} cmd=${msg.command} success=${Boolean(msg.success)} msg=${msg.message}`;
+      log(text);
+      if (id === 1 || id === 2) {
+        commandSummary[id] = `setup ${String(msg.command)} (ok=${Boolean(msg.success)})`;
+        if (!Boolean(msg.success)) {
+          setMotorHealth(id, false, String(msg.message || 'control failed'));
+        }
+        renderStateBox(id);
+      }
+      return;
+    }
+
+    if (msg.type === 'stop_all_queued') {
+      const cancelledGoals = Number(msg.cancelled_goals || 0);
+      const issuedStops = Number(msg.issued_stop_commands || 0);
+      log(`stop_all queued cancelled_goals=${cancelledGoals} issued_stop_commands=${issuedStops}`);
       return;
     }
   } catch (_err) {
@@ -407,10 +649,50 @@ saveDual.addEventListener('click', () => {
   log(`tx ${JSON.stringify(payload)}`);
 });
 
+releaseBtn.addEventListener('click', () => sendControlCommand('release'));
+setMiddleBtn.addEventListener('click', () => sendControlCommand('set_middle'));
+middleBtn.addEventListener('click', () => sendControlCommand('middle'));
+stopBtn.addEventListener('click', () => sendControlCommand('stop'));
+torqueOnBtn.addEventListener('click', () => sendControlCommand('torque_on'));
+recoverBtn.addEventListener('click', () => sendControlCommand('recover'));
+stopAllBtn.addEventListener('click', () => sendStopAll());
+
+jogMinusBtn.addEventListener('click', () => {
+  const id = axisId();
+  const step = clamp(Number(jogStep.value), 0.1, 20.0);
+  jogStep.value = step.toFixed(1);
+  const base = getJogBasePercent(id);
+  const next = clampByAxisLimits(id, base - step);
+  target.value = String(next);
+  updateTargetOutput();
+  sendMoveCommand('manual_jog_minus');
+});
+
+jogPlusBtn.addEventListener('click', () => {
+  const id = axisId();
+  const step = clamp(Number(jogStep.value), 0.1, 20.0);
+  jogStep.value = step.toFixed(1);
+  const base = getJogBasePercent(id);
+  const next = clampByAxisLimits(id, base + step);
+  target.value = String(next);
+  updateTargetOutput();
+  sendMoveCommand('manual_jog_plus');
+});
+
+saveManualLimitsBtn.addEventListener('click', () => {
+  const id = axisId();
+  const normalized = normalizeLimits(Number(manualMin.value), Number(manualMax.value));
+  manualLimitById[id] = normalized;
+  applyManualBoundsUI();
+  sendManualLimits(id, normalized.min, normalized.max);
+});
+
 updateTargetOutput();
+updateMotionOutputs();
 updateModeToggle();
 updateModeVisibility();
 updateSlotUI();
 updateDualUI();
+applyManualBoundsUI();
 renderStateBox(1);
 renderStateBox(2);

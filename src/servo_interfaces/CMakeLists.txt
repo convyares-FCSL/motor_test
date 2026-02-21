@@ -13,6 +13,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MotorPercentCommand.msg"
   "msg/MotorState.msg"
   "srv/ServoCommand.srv"
+  "srv/ServoControl.srv"
   "srv/ServoRead.srv"
 )
 

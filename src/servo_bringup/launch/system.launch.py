@@ -49,6 +49,7 @@ def generate_launch_description() -> LaunchDescription:
     bridge_names_file = os.getenv('ROS_BRIDGE_NAMES_FILE', '')
     bridge_positions_file = os.getenv('ROS_BRIDGE_POSITIONS_FILE', '')
     bridge_live_poll_s = float(os.getenv('ROS_BRIDGE_LIVE_POLL_S', '1.0'))
+    motor_type = os.getenv('SERVO_MOTOR_TYPE', 'waveshare_st3215').strip().lower()
     simulation_enabled = os.getenv('STS_SIMULATION', '0').strip().lower() in ('1', 'true', 'yes', 'on')
     simulation_default_position = int(os.getenv('STS_SIM_DEFAULT_POSITION', '2048'))
     windows_proxy_enabled = os.getenv('STS_WINDOWS_PROXY', '1').strip().lower() in ('1', 'true', 'yes', 'on')
@@ -60,6 +61,7 @@ def generate_launch_description() -> LaunchDescription:
     wait_timeout = float(os.getenv('STS_WAIT_IDS_TIMEOUT_S', '8.0'))
     retry_period = float(os.getenv('STS_WAIT_IDS_RETRY_S', '0.4'))
     startup_settle = float(os.getenv('STS_STARTUP_SETTLE_S', '0.4'))
+    recover_cycle_delay = float(os.getenv('STS_RECOVER_CYCLE_DELAY_S', '0.25'))
 
     serial_node = LifecycleNode(
         package='servo_serial',
@@ -82,6 +84,7 @@ def generate_launch_description() -> LaunchDescription:
             'simulation_enabled': simulation_enabled,
             'simulation_default_position': simulation_default_position,
             'simulation_command_delay_s': 0.02,
+            'recover_torque_cycle_delay_s': recover_cycle_delay,
             'windows_proxy_enabled': windows_proxy_enabled,
             'windows_proxy_timeout_s': windows_proxy_timeout,
             'windows_proxy_python': windows_proxy_python,
@@ -109,11 +112,13 @@ def generate_launch_description() -> LaunchDescription:
             'state_topic': 'servo/state',
             'motor_action_name': 'servo_motor/move',
             'serial_read_service': 'servo_serial/read',
+            'serial_control_service': 'servo_serial/control',
             'live_poll_period_s': bridge_live_poll_s,
             'known_ids': known_ids,
             'motor_ids': known_ids,
             'motor_min': motor_min,
             'motor_max': motor_max,
+            'motor_type': motor_type,
             'names_file': bridge_names_file,
             'positions_file': bridge_positions_file,
         }],

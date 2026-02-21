@@ -125,8 +125,7 @@ class MotorNode(LifecycleNode):
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle) -> CancelResponse:
-        # The current transport does not support deterministic mid-motion stop.
-        return CancelResponse.REJECT
+        return CancelResponse.ACCEPT
 
     def _execute_callback(self, goal_handle) -> MotorMove.Result:
         goal = goal_handle.request
@@ -169,6 +168,12 @@ class MotorNode(LifecycleNode):
 
             future = self._client_command.call_async(request)
             while rclpy.ok() and not future.done():
+                if goal_handle.is_cancel_requested:
+                    result.message = 'cancel requested'
+                    self._feedback(goal_handle, motor_id, percent, target, 'cancel', result.message)
+                    self._publish_state(motor_id, percent, target, False, 0, result.message)
+                    goal_handle.canceled()
+                    return result
                 time.sleep(0.01)
 
             if not future.done():
@@ -183,6 +188,13 @@ class MotorNode(LifecycleNode):
                 result.message = f'service call failed: {exc}'
                 self._publish_state(motor_id, percent, target, False, 0, result.message)
                 goal_handle.abort()
+                return result
+
+            if goal_handle.is_cancel_requested:
+                result.message = 'cancel requested'
+                self._feedback(goal_handle, motor_id, percent, target, 'cancel', result.message)
+                self._publish_state(motor_id, percent, target, False, 0, result.message)
+                goal_handle.canceled()
                 return result
 
             result.success = bool(response.success)

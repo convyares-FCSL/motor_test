@@ -41,12 +41,44 @@
 
       <span>Mode</span>
       <button id="modeToggle" class="mode-toggle" data-mode="manual">Mode: Manual</button>
+    </section>
 
-      <label for="speed">Speed</label>
-      <input id="speed" type="number" min="1" max="4000" value="120" />
+    <section class="row global-actions">
+      <button id="stopAllBtn" class="stop-all-btn">STOP ALL</button>
+    </section>
 
-      <label for="acc">Acc</label>
-      <input id="acc" type="number" min="1" max="255" value="10" />
+    <section class="row tuning">
+      <label for="speed">Speed (%)</label>
+      <input id="speed" type="range" min="0" max="100" step="1" value="25" />
+      <output id="speedv">25% (768)</output>
+      <label for="acc">Acc (%)</label>
+      <input id="acc" type="range" min="0" max="100" step="1" value="20" />
+      <output id="accv">20% (30)</output>
+      <p id="profileInfo" class="hint-inline"></p>
+    </section>
+
+    <section class="row manual-setup" id="manualSetup">
+      <button id="releaseBtn" class="setup-btn">Release</button>
+      <button id="setMiddleBtn" class="setup-btn">Set Middle</button>
+      <button id="middleBtn" class="setup-btn">Middle</button>
+      <button id="stopBtn" class="setup-btn">Stop</button>
+      <button id="torqueOnBtn" class="setup-btn">Torque On</button>
+      <button id="recoverBtn" class="setup-btn">Recover</button>
+    </section>
+
+    <section class="row manual-jog" id="manualJog">
+      <label for="jogStep">Jog Step (%)</label>
+      <input id="jogStep" type="number" min="0.1" max="20" step="0.1" value="1.0" />
+      <button id="jogMinusBtn" class="setup-btn">Jog -</button>
+      <button id="jogPlusBtn" class="setup-btn">Jog +</button>
+    </section>
+
+    <section class="row manual-limits" id="manualLimits">
+      <label for="manualMin">Min (%)</label>
+      <input id="manualMin" type="number" min="0" max="100" step="0.1" value="0" />
+      <label for="manualMax">Max (%)</label>
+      <input id="manualMax" type="number" min="0" max="100" step="0.1" value="100" />
+      <button id="saveManualLimitsBtn">Save Manual Limits</button>
     </section>
 
     <section class="row target" id="singleTarget">

@@ -18,6 +18,17 @@ if ! python3 -c "import aiohttp" >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "${STS_AUTO_FORWARD_ON:-0}" =~ ^(1|true|yes|on)$ ]]; then
+  if [[ -x "$ROOT_DIR/scripts/serial_forwarding.sh" ]]; then
+    "$ROOT_DIR/scripts/serial_forwarding.sh" on
+    if [[ -n "${STS_FORWARD_SETTLE_S:-}" ]]; then
+      sleep "$STS_FORWARD_SETTLE_S"
+    fi
+  else
+    echo "Warning: STS_AUTO_FORWARD_ON is set but scripts/serial_forwarding.sh is missing"
+  fi
+fi
+
 if [[ ! -f "$ROOT_DIR/install/setup.bash" ]]; then
   echo "Workspace not built yet. Run: ./scripts/build_ros.sh"
   exit 1
