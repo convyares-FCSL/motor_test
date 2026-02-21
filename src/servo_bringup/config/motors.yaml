@@ -1,0 +1,11 @@
+servo_motor:
+  ros__parameters:
+    motor_ids: [1, 2]
+    motor_min: [1228, 3112]
+    motor_max: [2662, 4095]
+    default_speed: 120
+    default_acc: 10
+    command_topic: servo/command_percent
+    state_topic: servo/state
+    serial_command_service: servo_serial/command
+    move_action_name: servo_motor/move

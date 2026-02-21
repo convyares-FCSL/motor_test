@@ -1,0 +1,256 @@
+:root {
+  --bg: #121a23;
+  --bg-panel: #1a2633;
+  --bg-panel-2: #223244;
+  --line: #3f566d;
+  --text: #e8edf3;
+  --muted: #9db1c4;
+  --accent: #f5b700;
+  --accent-2: #4fd1c5;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Noto Sans", sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 20% 20%, #223349 0%, #111821 60%);
+}
+
+.panel {
+  max-width: 920px;
+  margin: 24px auto;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--bg-panel), var(--bg));
+}
+
+h1 {
+  margin: 0 0 8px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.subtitle {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+.row {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.row.names {
+  grid-template-columns: 1fr 1fr;
+}
+
+.row.names-save {
+  grid-template-columns: 1fr;
+}
+
+.name-card {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.row.control {
+  grid-template-columns: 70px 1fr 70px 170px 70px 110px 60px 100px;
+  align-items: center;
+}
+
+.row.target {
+  grid-template-columns: 90px 1fr 70px 130px;
+  align-items: center;
+}
+
+.row.dual-target {
+  grid-template-columns: 90px 1fr 70px 120px 70px 120px 180px;
+  align-items: center;
+}
+
+.row.states {
+  grid-template-columns: 1fr 1fr;
+}
+
+.dual {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.dual-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 8px;
+}
+
+.dual-btn {
+  background: #334a63;
+  color: var(--text);
+  text-align: left;
+  min-height: 58px;
+  white-space: pre-line;
+}
+
+.dual-btn.active {
+  background: var(--accent-2);
+  color: #062823;
+}
+
+.slots {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.slots-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+select,
+input[type="number"],
+.name-input {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg-panel-2);
+  color: var(--text);
+}
+
+.axis-radios {
+  display: inline-flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.radio-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-panel-2);
+}
+
+.radio-chip input[type="radio"] {
+  accent-color: var(--accent-2);
+}
+
+input[type="range"] {
+  width: 100%;
+}
+
+button {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--accent);
+  color: #1f1a00;
+}
+
+.slot-btn {
+  background: #2d4258;
+  color: var(--text);
+}
+
+.slot-btn.active {
+  background: var(--accent-2);
+  color: #062823;
+}
+
+.save-names {
+  background: #76e26d;
+  color: #0d2808;
+}
+
+.mode-toggle {
+  background: #3e5470;
+  color: var(--text);
+  width: 100%;
+}
+
+.state-box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #102131;
+  min-height: 44px;
+  white-space: pre-line;
+}
+
+#dualName {
+  width: calc(100% - 10px);
+  justify-self: start;
+}
+
+.hint {
+  color: var(--muted);
+  margin: 10px 0 0;
+}
+
+pre {
+  margin-top: 12px;
+  height: 180px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b1520;
+  padding: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 820px) {
+  .row.names,
+  .row.states {
+    grid-template-columns: 1fr;
+  }
+
+  .row.control {
+    grid-template-columns: 80px 1fr 80px 1fr;
+  }
+
+  .dual-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .row.target {
+    grid-template-columns: 90px 1fr 70px;
+  }
+
+  .row.dual-target {
+    grid-template-columns: 1fr;
+  }
+
+  #saveSlot {
+    grid-column: 1 / -1;
+  }
+
+  #saveDual {
+    grid-column: 1 / -1;
+  }
+}

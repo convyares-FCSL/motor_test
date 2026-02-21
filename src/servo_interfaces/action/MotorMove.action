@@ -1,0 +1,19 @@
+int32 id
+float32 percent
+int32 speed
+int32 acc
+string mode
+---
+bool success
+int32 id
+float32 percent
+int32 target_position
+int32 actual_position
+string mode
+string message
+---
+int32 id
+float32 percent
+int32 target_position
+string stage
+string message
